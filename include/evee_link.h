@@ -19,6 +19,29 @@
 #define EVEE_MAGIC 0x5645
 
 // ---------------------------------------------------------------------------
+// Radio. Part of the contract, not an implementation detail: ESP-NOW is pinned
+// to a WiFi channel and every node in the link must agree on it or they never
+// hear each other.
+//
+// A node that also runs a SoftAP (as ESK8OS does for its export/console) will
+// have the AP drag the shared radio onto ITS channel — so such a node must
+// either force the AP onto EVEE_CHANNEL, or refuse to start the AP while armed.
+// ESK8OS does the latter. Do not get clever with channel juggling on a safety
+// path.
+// ---------------------------------------------------------------------------
+#ifndef EVEE_CHANNEL
+#define EVEE_CHANNEL 1
+#endif
+
+// Enable the 802.11 LR rate alongside b/g/n. Not for range — the rider is a
+// metre from the board — but for link margin in a park full of 2.4 GHz noise.
+// Keeping b/g/n in the bitmask means a node without LR can still talk to one
+// with it, so this is safe to leave on.
+#ifndef EVEE_LONG_RANGE
+#define EVEE_LONG_RANGE 1
+#endif
+
+// ---------------------------------------------------------------------------
 // Timing. Every one of these is a safety parameter; read docs/protocol.md
 // before changing any of them.
 // ---------------------------------------------------------------------------

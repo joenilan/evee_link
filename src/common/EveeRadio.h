@@ -5,20 +5,9 @@
 #include <Arduino.h>
 #include "evee_link.h"
 
-// The WiFi channel ESP-NOW is pinned to. Every node in the link must agree.
-// (If a node ever also runs a SoftAP, the AP must be forced to this channel or
-// it will drag the radio away and the link dies. The receiver runs no AP.)
-#ifndef EVEE_CHANNEL
-#define EVEE_CHANNEL 1
-#endif
-
-// Enable the 802.11 LR rate alongside b/g/n. We do not need the range — the
-// rider is a metre from the board — we want the link margin in a park full of
-// 2.4 GHz noise. Keeping b/g/n in the bitmask means a node without LR can still
-// talk to one with it, so this is safe to have on by default.
-#ifndef EVEE_LONG_RANGE
-#define EVEE_LONG_RANGE 1
-#endif
+// EVEE_CHANNEL and EVEE_LONG_RANGE are contract-level: they live in evee_link.h,
+// because a channel the two nodes disagree on is a link that silently never
+// forms, which makes it a protocol concern rather than a radio-helper one.
 
 typedef void (*EveeRxHandler)(const uint8_t* mac, const uint8_t* data, int len);
 
