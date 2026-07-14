@@ -1,0 +1,20 @@
+{
+  "name": "evee_link",
+  "version": "1.0.0",
+  "description": "EVEE Link — the wire contract for an ESP-NOW throttle link to a VESC board. Header-only: this package exports the protocol, not the firmwares that implement it.",
+  "keywords": "esp-now, vesc, esk8, remote, throttle",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joenilan/evee_link.git"
+  },
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "headers": "evee_link.h",
+  "export": {
+    "include": ["include", "library.json", "README.md", "docs"]
+  },
+  "build": {
+    "srcDir": "include",
+    "includeDir": "include"
+  }
+}
