@@ -76,20 +76,40 @@ void VescOut::sendBrakeCurrent(float amps) {
     sendPacket(p, i);
 }
 
+// Only acceleration is slew-limited, so this tracks the last ACCEL current.
+static float sLastAccelAmps = 0.0f;
+
 void VescOut::coast() {
+    // Immediate zero — bypasses the slew limiter on purpose. A failsafe coast
+    // must drop to zero now, not ramp down over a tenth of a second.
+    sLastAccelAmps = 0.0f;
     sendCurrent(0.0f);
 }
 
-void VescOut::writeThrottle(int16_t throttle) {
+void VescOut::writeThrottle(int16_t rawThrottle) {
+    // The wire carries raw linear position; the receiver owns the curve.
+    const int16_t throttle = eveeApplyExpo(rawThrottle, EVEE_EXPO_PCT_DEFAULT);
+
     if (eveeIsNeutral(throttle)) {
+        sLastAccelAmps = 0.0f;
         sendCurrent(0.0f);
         return;
     }
 
     if (throttle > 0) {
-        const float frac = (float)throttle / (float)EVEE_THROTTLE_MAX;
-        sendCurrent(frac * EVEE_MAX_MOTOR_CURRENT_A);
+        float amps = ((float)throttle / (float)EVEE_THROTTLE_MAX) * EVEE_MAX_MOTOR_CURRENT_A;
+
+        // Limit the rise only. Backing OFF the throttle is always instant — the
+        // rider asking for less power must never be made to wait.
+        const float step = EVEE_ACCEL_SLEW_A_PER_S * (EVEE_CONTROL_MS / 1000.0f);
+        if (amps > sLastAccelAmps + step) amps = sLastAccelAmps + step;
+
+        sLastAccelAmps = amps;
+        sendCurrent(amps);
     } else {
+        // Brake is never slew-limited. A mushy, delayed brake is a safety problem,
+        // not a comfort feature.
+        sLastAccelAmps = 0.0f;
         const float frac = (float)(-throttle) / (float)(-EVEE_THROTTLE_MIN);
         sendBrakeCurrent(frac * EVEE_MAX_BRAKE_CURRENT_A);
     }

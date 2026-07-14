@@ -46,8 +46,17 @@
 // before changing any of them.
 // ---------------------------------------------------------------------------
 
-// Remote -> Receiver control rate. 50 Hz (20 ms) is the throttle loop.
-#define EVEE_CONTROL_HZ      50
+// Remote -> Receiver control rate.
+//
+// 100 Hz, because the dominant term in end-to-end throttle latency is not the
+// radio (ESP-NOW is 1-3 ms) — it is the tick quantization, and there are two of
+// them, one at each end. At 50 Hz that was up to 40 ms of pure waiting; at
+// 100 Hz it is up to 20 ms, which takes the whole chain to ~15 ms typical.
+//
+// The radio has ample headroom for this and the receiver skips its telemetry
+// poll while armed, so nothing is competing for the UART. Going faster still
+// gives diminishing returns against the VESC's own current ramp.
+#define EVEE_CONTROL_HZ      100
 #define EVEE_CONTROL_MS      (1000 / EVEE_CONTROL_HZ)
 
 // Receiver -> Remote status rate. Telemetry for the remote's screen; not on the
@@ -185,6 +194,47 @@ static inline int16_t eveeClampThrottle(int32_t v) {
     if (v < EVEE_THROTTLE_MIN) return EVEE_THROTTLE_MIN;
     return (int16_t)v;
 }
+
+// ---------------------------------------------------------------------------
+// Throttle shaping.
+//
+// The WIRE CARRIES RAW LINEAR POSITION. The remote calibrates its sensor and
+// deadzones it; it does not shape the curve. Shaping is the RECEIVER's job,
+// because that is where the settings live — you can retune the feel of the board
+// without reflashing a sealed handheld with a battery soldered into it.
+//
+// Expo: out = k*x^3 + (1-k)*x, on x normalized to -1..1. The classic RC curve.
+// Monotonic for k in [0,1], and it pins 0 -> 0 and +/-1 -> +/-1, so it can
+// never invent throttle the rider did not ask for, and can never cap what they
+// did. A linear map feels twitchy just off neutral and dull at the top; expo
+// gives fine control where you actually ride and full power when you demand it.
+//
+// expoPct is 0 (linear) .. 100 (maximum curve). 30-40 is a good starting point.
+// ---------------------------------------------------------------------------
+#ifndef EVEE_EXPO_PCT_DEFAULT
+#define EVEE_EXPO_PCT_DEFAULT 35
+#endif
+
+static inline int16_t eveeApplyExpo(int16_t throttle, uint8_t expoPct) {
+    if (expoPct == 0) return throttle;
+    if (expoPct > 100) expoPct = 100;
+
+    const float x = (float)throttle / (float)EVEE_THROTTLE_MAX;   // -1..1
+    const float k = (float)expoPct / 100.0f;
+    const float y = k * x * x * x + (1.0f - k) * x;
+    return eveeClampThrottle((int32_t)(y * (float)EVEE_THROTTLE_MAX));
+}
+
+// ---------------------------------------------------------------------------
+// Acceleration slew limit, in amps per second, applied by the receiver.
+//
+// ACCELERATION ONLY. Braking is never slew-limited: a mushy, delayed brake is a
+// safety problem, not a comfort feature. And a failsafe coast bypasses this
+// entirely — dropping to zero on a lost link must be immediate, not a ramp.
+// ---------------------------------------------------------------------------
+#ifndef EVEE_ACCEL_SLEW_A_PER_S
+#define EVEE_ACCEL_SLEW_A_PER_S 100.0f
+#endif
 
 // ---------------------------------------------------------------------------
 // Security.

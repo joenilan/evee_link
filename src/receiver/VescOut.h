@@ -31,9 +31,11 @@ class VescOut {
 public:
     void begin();
 
-    // throttle is on the EVEE scale: -1000 (full brake) .. +1000 (full accel).
-    // Anything in the neutral band commands zero current, i.e. coast.
-    void writeThrottle(int16_t throttle);
+    // rawThrottle is the raw linear position off the wire: -1000 (full brake) ..
+    // +1000 (full accel). The expo curve and the acceleration slew limit are
+    // applied HERE — the receiver owns the feel, so it can be retuned without
+    // reflashing a sealed handheld. Anything in the neutral band coasts.
+    void writeThrottle(int16_t rawThrottle);
 
     // Command zero immediately. This is what FAILSAFE calls. Coast, never brake:
     // an automatic hard brake at speed throws the rider off the board.

@@ -1,6 +1,6 @@
 {
   "name": "evee_link",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "EVEE Link — the wire contract for an ESP-NOW throttle link to a VESC board. Header-only: this package exports the protocol, not the firmwares that implement it.",
   "keywords": "esp-now, vesc, esk8, remote, throttle",
   "repository": {
