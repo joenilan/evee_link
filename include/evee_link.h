@@ -97,10 +97,37 @@ enum EveePacketType : uint8_t {
     EVEE_PKT_STATUS  = 2,   // receiver -> remote, EVEE_STATUS_HZ
 };
 
+// Bits in EveeControl.buttons.
+//
+// These carry the button's LEVEL (set while held), not an edge. The receiver
+// does its own edge and long-press detection.
+//
+// That is on purpose: an edge is a single event, and a single ESP-NOW packet can
+// be dropped — so an edge sent once can be lost forever, and the rider's button
+// press just does nothing. A held button appears in dozens of consecutive
+// packets, so the receiver cannot miss it. Levels are the packet-loss-tolerant
+// way to send a button over an unreliable link.
+enum EveeButtons : uint8_t {
+    EVEE_BTN_KILL = 1 << 0,   // panic: disarm now
+    EVEE_BTN_PAGE = 1 << 1,   // cycle the board's display page (on press)
+    EVEE_BTN_TRIP = 1 << 2,   // reset the trip (on LONG press — it is destructive)
+};
+
+// How long EVEE_BTN_TRIP must be held before the receiver acts on it. Trip reset
+// throws away the ride's numbers, so it does not get to happen on a brush.
+#define EVEE_BTN_LONG_MS 1500
+
 // Bits in EveeControl.flags.
 enum EveeControlFlags : uint8_t {
-    // The rider is asking to be armed. Necessary but NOT sufficient — the
-    // receiver still requires the neutral-throttle run (EVEE_ARM_NEUTRAL_MS).
+    // The rider is armed-and-ready. Necessary but NOT sufficient — the receiver
+    // still requires the neutral-throttle run (EVEE_ARM_NEUTRAL_MS).
+    //
+    // There is no arm BUTTON. A spring-return trigger is already a deadman: let
+    // go — drop the remote, fall off — and the spring takes the throttle to
+    // neutral with no action from the rider. So the remote asserts this by
+    // itself, once it has seen its own throttle sitting at neutral since boot.
+    // A trigger stuck open at power-on therefore never arms, which is the case
+    // the arming rules exist for in the first place.
     EVEE_FLAG_ARM_REQUEST   = 1 << 0,
 
     // The remote's own throttle sensor reads outside its plausible band, i.e.

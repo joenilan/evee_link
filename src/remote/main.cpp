@@ -23,6 +23,7 @@
 #include "EveeRadio.h"
 #include "Throttle.h"
 #include "Battery.h"
+#include "Buttons.h"
 
 // The 0.91" SSD1306 is 128x32 at address 0x3C.
 #define OLED_W 128
@@ -35,10 +36,23 @@ static bool oledOk = false;
 static EveeRadio     radio;
 static Throttle      throttle;
 static Battery       battery;
+static Buttons       buttons;
 static EveePeerState receiverState;
 
-static volatile bool armRequest = false;
-static volatile bool killed     = false;
+// Auto-arm. There is no arm button, because the spring-return trigger already IS
+// a deadman: let go — drop the remote, come off the board — and the spring takes
+// the throttle to neutral without the rider doing anything.
+//
+// So the only thing the remote insists on is that it has SEEN its own throttle at
+// neutral at least once since boot. A trigger stuck open at power-on never
+// satisfies that, and so never arms — which is the exact case the arming rules
+// exist for. Once satisfied, the receiver's own rules take over: encrypted link,
+// throttle neutral, held for EVEE_ARM_NEUTRAL_MS.
+static volatile bool sawNeutral = false;
+
+// Latched by the kill button (or the `kill` console command). Cleared only by an
+// explicit `clear`, and even then the neutral run must happen again.
+static volatile bool killed = false;
 
 // Latest status from the board. Display only — never on the safety path. A remote
 // that hears nothing back still sends throttle; it just shows no telemetry.
@@ -73,17 +87,25 @@ static void txTask(void*) {
 
     for (;;) {
         throttle.update();
+        buttons.update();
+
+        const bool fault = throttle.fault();
+
+        if (buttons.killHeld()) killed = true;
+
+        // The one thing auto-arm insists on: the throttle has been seen at neutral
+        // since boot. A trigger stuck open at power-on never gets here.
+        if (!fault && eveeIsNeutral(throttle.value())) sawNeutral = true;
 
         EveeControl c = {};
         radio.fillHeader(c.hdr, EVEE_PKT_CONTROL);
 
-        const bool fault = throttle.fault();
-
         // A faulted sensor sends zero, always. The flag tells the receiver why,
         // but the value is what protects the rider if the flag is ever ignored.
         c.throttle = fault ? 0 : throttle.value();
+        c.buttons  = buttons.mask();
         c.flags    = 0;
-        if (armRequest && !fault && !killed) c.flags |= EVEE_FLAG_ARM_REQUEST;
+        if (sawNeutral && !fault && !killed) c.flags |= EVEE_FLAG_ARM_REQUEST;
         if (fault)                           c.flags |= EVEE_FLAG_THROTTLE_FAULT;
         if (killed)                          c.flags |= EVEE_FLAG_KILL;
 
@@ -109,17 +131,15 @@ static void handleSerial() {
         buf[n] = 0;
         n = 0;
 
-        if (!strcmp(buf, "arm")) {
-            armRequest = true;
-            killed = false;
-            Serial.println("[evee] arm requested");
-        } else if (!strcmp(buf, "disarm")) {
-            armRequest = false;
-            Serial.println("[evee] arm request dropped");
-        } else if (!strcmp(buf, "kill")) {
+        if (!strcmp(buf, "kill")) {
             killed = true;
-            armRequest = false;
-            Serial.println("[evee] KILL");
+            Serial.println("[evee] KILL — latched. `clear` to release.");
+        } else if (!strcmp(buf, "clear")) {
+            // Releasing a kill does NOT re-arm. The throttle still has to go back
+            // through the neutral run, same as any other path into ARMED.
+            killed = false;
+            sawNeutral = false;
+            Serial.println("[evee] kill cleared — return the throttle to neutral to re-arm");
         } else if (!strcmp(buf, "mac")) {
             Serial.printf("[evee] this node: %s\n", EveeRadio::selfMac().c_str());
         } else if (!strcmp(buf, "z")) {
@@ -131,6 +151,13 @@ static void handleSerial() {
             Serial.printf("[evee] cell %.2f V  %u%%%s\n",
                           battery.volts(), (unsigned)battery.percent(),
                           battery.low() ? "  LOW" : "");
+        } else if (!strcmp(buf, "btn")) {
+            const uint8_t m = buttons.mask();
+            Serial.printf("[evee] buttons: %s%s%s%s\n",
+                          (m & EVEE_BTN_KILL) ? "KILL " : "",
+                          (m & EVEE_BTN_PAGE) ? "PAGE " : "",
+                          (m & EVEE_BTN_TRIP) ? "TRIP " : "",
+                          m ? "" : "(none)");
         } else if (!strncmp(buf, "t ", 2)) {
 #if EVEE_THROTTLE_SYNTHETIC
             const int v = atoi(buf + 2);
@@ -158,9 +185,9 @@ static void handleSerial() {
 #endif
         } else if (buf[0]) {
 #if EVEE_THROTTLE_SYNTHETIC
-            Serial.println("[evee] arm | disarm | kill | t <n> | z | batt | mac");
+            Serial.println("[evee] kill | clear | t <n> | z | batt | btn | mac");
 #else
-            Serial.println("[evee] arm | disarm | kill | batt | mac | raw | cal [center|brake|accel|save]");
+            Serial.println("[evee] kill | clear | batt | btn | mac | raw | cal [center|brake|accel|save]");
 #endif
         }
     }
@@ -225,6 +252,7 @@ void setup() {
     if (!oledOk) Serial.println("[evee] no SSD1306 at 0x3C — running headless");
 
     battery.begin();
+    buttons.begin();
     throttle.begin();
 
     if (!radio.begin(EVEE_RECEIVER_MAC, onRx)) {
