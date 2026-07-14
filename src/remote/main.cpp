@@ -22,6 +22,7 @@
 #include "evee_peers.h"
 #include "EveeRadio.h"
 #include "Throttle.h"
+#include "Battery.h"
 
 // The 0.91" SSD1306 is 128x32 at address 0x3C.
 #define OLED_W 128
@@ -33,6 +34,7 @@ static bool oledOk = false;
 
 static EveeRadio     radio;
 static Throttle      throttle;
+static Battery       battery;
 static EveePeerState receiverState;
 
 static volatile bool armRequest = false;
@@ -85,7 +87,7 @@ static void txTask(void*) {
         if (fault)                           c.flags |= EVEE_FLAG_THROTTLE_FAULT;
         if (killed)                          c.flags |= EVEE_FLAG_KILL;
 
-        c.remoteBattPct = 100;   // TODO(stage 2): read the LiPo divider
+        c.remoteBattPct = battery.percent();
 
         radio.send(&c, sizeof(c));
 
@@ -125,6 +127,10 @@ static void handleSerial() {
             throttle.setSynthetic(0);
 #endif
             Serial.println("[evee] throttle 0");
+        } else if (!strcmp(buf, "batt")) {
+            Serial.printf("[evee] cell %.2f V  %u%%%s\n",
+                          battery.volts(), (unsigned)battery.percent(),
+                          battery.low() ? "  LOW" : "");
         } else if (!strncmp(buf, "t ", 2)) {
 #if EVEE_THROTTLE_SYNTHETIC
             const int v = atoi(buf + 2);
@@ -133,8 +139,29 @@ static void handleSerial() {
 #else
             Serial.println("[evee] built with a real throttle; `t` does nothing");
 #endif
+#if !EVEE_THROTTLE_SYNTHETIC
+        } else if (!strcmp(buf, "cal center")) {
+            throttle.calCenter();
+        } else if (!strcmp(buf, "cal brake")) {
+            throttle.calBrake();
+        } else if (!strcmp(buf, "cal accel")) {
+            throttle.calAccel();
+        } else if (!strcmp(buf, "cal save")) {
+            throttle.calSave();
+        } else if (!strcmp(buf, "cal")) {
+            throttle.calPrint();
+            Serial.println("[cal] hold each position, then: cal center | cal brake | cal accel | cal save");
+        } else if (!strcmp(buf, "raw")) {
+            Serial.printf("[thr] raw=%u  value=%+d  %s\n",
+                          (unsigned)throttle.rawAngle(), (int)throttle.value(),
+                          throttle.fault() ? throttle.faultReason() : "ok");
+#endif
         } else if (buf[0]) {
-            Serial.println("[evee] arm | disarm | kill | t <n> | z | mac");
+#if EVEE_THROTTLE_SYNTHETIC
+            Serial.println("[evee] arm | disarm | kill | t <n> | z | batt | mac");
+#else
+            Serial.println("[evee] arm | disarm | kill | batt | mac | raw | cal [center|brake|accel|save]");
+#endif
         }
     }
 }
@@ -162,7 +189,10 @@ static void drawOled() {
 
     if (throttle.fault()) {
         oled.setCursor(0, 10);
-        oled.print("THROTTLE FAULT");
+        oled.print("THR FAULT");
+    } else {
+        oled.setCursor(0, 10);
+        oled.printf("BAT %u%%%s", (unsigned)battery.percent(), battery.low() ? "!" : "");
     }
 
     // Throttle bar, centred: left of centre is brake, right is accel.
@@ -189,10 +219,12 @@ void setup() {
     Serial.println("[evee] synthetic throttle — use `t <n>`, `arm`, `kill`");
 #endif
 
+    // One I2C bus, two devices: the OLED at 0x3C and the AS5600 at 0x36.
     Wire.begin();
     oledOk = oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
     if (!oledOk) Serial.println("[evee] no SSD1306 at 0x3C — running headless");
 
+    battery.begin();
     throttle.begin();
 
     if (!radio.begin(EVEE_RECEIVER_MAC, onRx)) {
@@ -209,9 +241,13 @@ void setup() {
 void loop() {
     handleSerial();
 
+    // Battery and screen both live here, on the low-priority Arduino loop. The
+    // throttle is in txTask at high priority, so neither an I2C redraw nor an ADC
+    // sweep can stretch a control tick.
     static uint32_t at = 0;
     if (millis() - at >= EVEE_STATUS_MS) {
         at = millis();
+        battery.update();
         drawOled();
     }
     delay(5);

@@ -3,71 +3,77 @@
 // Two implementations behind one interface, chosen at build time:
 //
 //   EVEE_THROTTLE_SYNTHETIC=1  the value comes from the serial console. This is
-//                              how stages 0-2 get built and tested with no
-//                              trigger hardware in existence.
-//   EVEE_THROTTLE_SYNTHETIC=0  a linear hall sensor on an ADC1 pin.
+//                              how the link, the arming and the failsafe get
+//                              built and proven with no trigger in existence.
+//   EVEE_THROTTLE_SYNTHETIC=0  an AS5600 magnetic encoder on the trigger pivot.
 //
-// Why hall and not a potentiometer: a pot is a wiper scraping a resistive track.
-// It wears, and a worn track can fail OPEN — which an ADC reads as full throttle.
-// A hall sensor is non-contact, never wears, and when it or its wiring fails it
-// fails to a voltage OUTSIDE the plausible band, which is detectable. That
-// detection is `fault()` below, and it is the whole reason for the choice.
+// The remote CALIBRATES and DEADZONES. It does not shape the curve — expo and
+// slew limiting live on the receiver, so the feel of the board can be retuned
+// without reflashing a sealed handheld. The wire carries raw linear position.
 #pragma once
 #include <Arduino.h>
 #include "evee_link.h"
+#include "As5600.h"
 
-// ADC1 only. ADC2 is unusable while WiFi is active on ESP32, and ESP-NOW is WiFi.
-#ifndef EVEE_HALL_PIN
-#define EVEE_HALL_PIN 1
-#endif
-
-// Calibration, in raw 12-bit ADC counts. Set these by running `cal` on the
-// serial console with the real trigger attached (stage 3).
-#ifndef EVEE_HALL_MIN
-#define EVEE_HALL_MIN 900     // trigger fully pulled back (full brake)
-#endif
-#ifndef EVEE_HALL_CENTER
-#define EVEE_HALL_CENTER 2048 // trigger at rest
-#endif
-#ifndef EVEE_HALL_MAX
-#define EVEE_HALL_MAX 3200    // trigger fully pushed (full accel)
-#endif
-
-// The plausible band. A reading outside this is not a throttle position, it is a
-// broken sensor or a broken wire: report fault, command zero, refuse to arm.
-// Keep a healthy margin outside the calibrated travel so that normal end-stops
-// and temperature drift never trip it.
-#ifndef EVEE_HALL_VALID_LO
-#define EVEE_HALL_VALID_LO 300
-#endif
-#ifndef EVEE_HALL_VALID_HI
-#define EVEE_HALL_VALID_HI 3800
-#endif
+// Calibration, in raw AS5600 counts (0..4095 per turn). Captured by the `cal`
+// console command and persisted to NVS, so it survives a reflash. The defaults
+// are placeholders — an uncalibrated remote reports a fault and cannot arm.
+struct ThrottleCal {
+    uint16_t center = 0;      // trigger at rest
+    int16_t  brakeSpan = 0;   // wrapped delta at full brake (negative)
+    int16_t  accelSpan = 0;   // wrapped delta at full accel (positive)
+    bool     valid = false;
+};
 
 class Throttle {
 public:
     void begin();
 
-    // Call every control tick. Filters, calibrates, deadzones, clamps.
+    // Call every control tick.
     void update();
 
-    // -1000..+1000, already deadzoned and clamped. Zero whenever fault() is set.
+    // -1000..+1000, deadzoned and clamped. Always zero while fault() is set.
     int16_t value() const { return _value; }
 
-    // The sensor is reading outside its plausible band, i.e. it or its wiring has
-    // failed. The receiver disarms on this.
+    // The sensor is not giving a trustworthy reading — no magnet, a field too
+    // weak to use, the AS5600 not answering, or no calibration. The receiver
+    // disarms on this. It is a positive signal from the sensor, not a guess:
+    // that is the point of using an encoder rather than a bare hall.
     bool fault() const { return _fault; }
+
+    const char* faultReason() const { return _faultReason; }
 
 #if EVEE_THROTTLE_SYNTHETIC
     void setSynthetic(int16_t v) { _synthetic = eveeClampThrottle(v); }
+#else
+    // Calibration, driven from the serial console. Sequence:
+    //   cal center   trigger at rest
+    //   cal brake    trigger held at full brake
+    //   cal accel    trigger held at full accel
+    //   cal save     write to NVS
+    bool calCenter();
+    bool calBrake();
+    bool calAccel();
+    void calSave();
+    void calLoad();
+    void calPrint() const;
+    const ThrottleCal& cal() const { return _cal; }
+
+    uint16_t rawAngle() const { return _raw; }
 #endif
 
 private:
-    int16_t _value = 0;
-    bool    _fault = false;
+    int16_t     _value = 0;
+    bool        _fault = true;              // faulted until proven otherwise
+    const char* _faultReason = "boot";
+
 #if EVEE_THROTTLE_SYNTHETIC
     int16_t _synthetic = 0;
 #else
-    int32_t _filtered = EVEE_HALL_CENTER;
+    As5600      _enc;
+    ThrottleCal _cal;
+    uint16_t    _raw = 0;
+    int32_t     _filtered = 0;   // filtered wrapped delta, not raw angle
+    uint8_t     _statusMissCount = 0;
 #endif
 };
